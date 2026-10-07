@@ -62,6 +62,10 @@ extern int MGABuildModeTable(IODisplayInfo *table, MGAMode *modes,
     unsigned char *blueTransferTable;
     int transferTableCount;
     int brightnessLevel;
+
+    int hwCursor;		/* hardware cursor enabled */
+    int cursorFrame;		/* frame loaded into cursor RAM, or -1 */
+    unsigned char palShadow[256][3];
 }
 + (BOOL)probe:deviceDescription;
 - initFromDeviceDescription:deviceDescription;
@@ -69,6 +73,9 @@ extern int MGABuildModeTable(IODisplayInfo *table, MGAMode *modes,
 - (void)revertToVGAMode;
 - free;
 - setBrightness:(int)level token:(int)t;
+- showCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+- moveCursor:(Point *)cursorLoc frame:(int)frame token:(int)t;
+- hideCursor:(int)token;
 - setTransferTable:(const unsigned int *)table count:(int)numEntries;
 @end
 

@@ -24,7 +24,8 @@ Developer Patch 4. **Not yet tried on real hardware.**
 * Hardware palette at 8 bpp (transfer table and brightness), software gamma at
   15/32 bpp.
 * **MTRR write combining** for the framebuffer aperture (see below).
-* No hardware cursor and no blitter yet; the window server draws everything.
+* **Hardware cursor** (TVP3026), see below.
+* No blitter yet; the window server draws everything else.
 
 ## Install
 
@@ -59,7 +60,28 @@ and restore the saved table, then reboot:
 |---|---|---|
 | `Display Mode` | see above | 640x480x8 |
 | `WriteCombining` | `Yes` / `No` | `Yes` |
+| `HardwareCursor` | `Yes` / `No` | `Yes` |
 | `DisplayCacheMode` | `Off` / `WriteThrough` / `CopyBack` | `WriteThrough` |
+
+## Hardware cursor
+
+The TVP3026 has a 64x64 cursor with two colours plus transparent. OPENSTEP
+keeps the 16x16 cursor bitmaps (premultiplied alpha, in the pixel format of the
+current depth) in a shared state block that `IOFrameBufferDisplay` keeps in its
+private `priv` ivar, and draws them in software. The driver overrides
+`showCursor:`, `moveCursor:` and `hideCursor:`, reads the same block (layout in
+the comments in `MatroxMGA2164W.m`, found by disassembling the 4.2 kernel's
+superclass), and loads an image into the DAC's cursor RAM:
+pixels with alpha below 50% are transparent, the rest are split by
+luminance into a dark and a light colour, each set to the average colour of its
+group. Anti-aliased edges therefore become hard edges, but the standard arrow,
+I-beam and so on look the same as the software cursor. It depends on a private
+offset (`priv` at +0x1fc) of the 4.2 kernel; set `HardwareCursor = No` to fall
+back to the superclass's software cursor.
+
+Checked in 86Box at 8-bit colour, 15-bit and 32-bit (a debug build with a red foreground colour
+confirmed the DAC draws it). Cursor movement was not exercised, because
+I could not feed mouse input to the VM. Moves use the same positioning code as the first show.
 
 ## Write combining
 

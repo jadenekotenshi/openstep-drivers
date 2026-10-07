@@ -6,6 +6,7 @@
  * driver (see NOTICE).
  */
 #import <string.h>
+#import <bsd/dev/ev_types.h>
 #import <driverkit/generalFuncs.h>
 #import <driverkit/i386/ioPorts.h>
 #import <driverkit/i386/IOPCIDeviceDescription.h>
@@ -268,6 +269,58 @@ writeCycles(volatile unsigned int *fb, unsigned int bytes)
     return rdtscLow() - t0;
 }
 
+
+/* ---- TVP3026 hardware cursor ------------------------------------------
+ *
+ * The event system keeps the 16x16 cursor bitmaps (premultiplied alpha, in
+ * the format of the current depth) in the shared state block that
+ * IOFrameBufferDisplay keeps in its private `priv' instance variable, and
+ * the superclass draws them in software.  We read the same block and load a
+ * two-colour-plus-transparent image into the TVP3026's cursor RAM instead.
+ * Layout of the block (found by disassembling the superclass):
+ *   +0x04 lock       +0x30/32/34/36 screen minx/maxx/miny/maxy (shorts)
+ *   +0x38 + 4*frame  hotspot (x low short, y high short)
+ *   +0x48 + ...      images: 8 bpp  256 bytes/frame, alpha planes at +0x448
+ *                            12/15 bpp 4:4:4:4 RGBA, 512 bytes/frame
+ *                            24 bpp 32-bit, 1 KB/frame, alpha in the top byte
+ *                            when pixelEncoding starts with 'A' or '-'
+ */
+#define EV_PRIV_OFFSET		0x1fc
+#define EVP_LOCK		0x04
+#define EVP_MINX		0x30
+#define EVP_MAXX		0x32
+#define EVP_MINY		0x34
+#define EVP_MAXY		0x36
+#define EVP_HOT			0x38
+#define EVP_IMAGES		0x48
+#define EVP_ALPHA8		0x448
+
+#define TVP_CUR_COL_ADDR	0x04
+#define TVP_CUR_COL_DATA	0x05
+#define TVP_CUR_RAM		0x0B
+#define TVP_CUR_XLOW		0x0C
+#define TVP_CUR_XHI		0x0D
+#define TVP_CUR_YLOW		0x0E
+#define TVP_CUR_YHI		0x0F
+#define TVP_CURSOR_CTL		0x06
+
+static unsigned char *
+evPriv(id self)
+{
+    return *(unsigned char **)((char *)self + EV_PRIV_OFFSET);
+}
+
+static unsigned int
+unpremul(unsigned int c, unsigned int a)
+{
+    unsigned int v;
+
+    if (a == 0)
+	return 0;
+    v = (c * 255) / a;
+    return v > 255 ? 255 : v;
+}
+
 @implementation MatroxMGA2164W
 
 + (BOOL)probe:deviceDescription
@@ -340,6 +393,8 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
 	return [super free];
 
     mtrrSlot = -1;
+    cursorFrame = -1;
+    hwCursor = 0;
     range = [deviceDescription memoryRangeList];
     if (range == 0 || [deviceDescription numMemoryRanges] < 2) {
 	IOLog("%s: no memory ranges.\n", [self name]);
@@ -439,6 +494,9 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
     redTransferTable = greenTransferTable = blueTransferTable = 0;
     transferTableCount = 0;
     brightnessLevel = EV_SCREEN_MAX_BRIGHTNESS;
+    for (k = 0; k < 256; k++)
+	palShadow[k][0] = palShadow[k][1] = palShadow[k][2] = k;
+    hwCursor = [self booleanForKey:"HardwareCursor" withDefault:YES];
 
     IOLog("%s: Matrox Millennium II, %d MB VRAM%s; `%d x %d @ %d Hz'.\n",
 	  [self name], vramBytes >> 20, interleave ? " (interleaved)" : "",
@@ -467,6 +525,185 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
 	mtrrSlot = -1;
     }
     return [super free];
+}
+
+
+/* Convert one cursor frame and load it into the DAC's cursor RAM. */
+- (void)loadCursorFrame:(int)frame from:(unsigned char *)p
+{
+    IODisplayInfo *di = [self displayInfo];
+    unsigned char ram[1024];
+    unsigned int lr = 0, lg = 0, lb = 0, ln = 0, dr = 0, dg = 0, db = 0, dn = 0;
+    int x, y, i, wait;
+    unsigned char old;
+
+    memset(ram, 0, sizeof(ram));
+    if (frame < 0 || frame > 3)
+	frame = 0;
+    for (y = 0; y < 16; y++) {
+	for (x = 0; x < 16; x++) {
+	    unsigned int a, r, g, b, lum;
+
+	    i = y * 16 + x;
+	    switch (di->bitsPerPixel) {
+	    case IO_8BitsPerPixel: {
+		unsigned int d = p[EVP_IMAGES + frame * 256 + i];
+
+		a = p[EVP_ALPHA8 + frame * 256 + i];
+		if (di->colorSpace == IO_OneIsWhiteColorSpace) {
+		    r = g = b = unpremul(d, a);
+		} else {
+		    r = palShadow[d][0];
+		    g = palShadow[d][1];
+		    b = palShadow[d][2];
+		}
+		break;
+	    }
+	    case IO_24BitsPerPixel: {
+		unsigned int v = *(unsigned int *)(p + EVP_IMAGES + frame * 1024
+						   + i * 4);
+
+		if (di->pixelEncoding[0] == 'A' || di->pixelEncoding[0] == '-') {
+		    a = v >> 24;
+		    r = unpremul((v >> 16) & 0xFF, a);
+		    g = unpremul((v >> 8) & 0xFF, a);
+		    b = unpremul(v & 0xFF, a);
+		} else {
+		    a = v & 0xFF;
+		    r = unpremul(v >> 24, a);
+		    g = unpremul((v >> 16) & 0xFF, a);
+		    b = unpremul((v >> 8) & 0xFF, a);
+		}
+		break;
+	    }
+	    default: {
+		unsigned int v = *(unsigned short *)(p + EVP_IMAGES + frame * 512
+						     + i * 2);
+
+		a = (v & 0xF) * 17;
+		r = unpremul(((v >> 12) & 0xF) * 17, a);
+		g = unpremul(((v >> 8) & 0xF) * 17, a);
+		b = unpremul(((v >> 4) & 0xF) * 17, a);
+		break;
+	    }
+	    }
+	    if (a < 128)
+		continue;
+	    lum = (r * 30 + g * 59 + b * 11) / 100;
+	    ram[512 + y * 8 + (x >> 3)] |= 0x80 >> (x & 7);	/* opaque */
+	    if (lum >= 128) {
+		ram[y * 8 + (x >> 3)] |= 0x80 >> (x & 7);	/* foreground */
+		lr += r; lg += g; lb += b; ln++;
+	    } else {
+		dr += r; dg += g; db += b; dn++;
+	    }
+	}
+    }
+    if (ln) { lr /= ln; lg /= ln; lb /= ln; } else { lr = lg = lb = 255; }
+    if (dn) { dr /= dn; dg /= dn; db /= dn; } else { dr = dg = db = 0; }
+
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_ADDR] = 1;		/* background */
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = dr;
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = dg;
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = db;
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_ADDR] = 2;		/* foreground */
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = lr;
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = lg;
+    ctl[RAMDAC_OFFSET + TVP_CUR_COL_DATA] = lb;
+
+    DAC_R(ctl, TVP_CURSOR_CTL, old);
+    DAC_W(ctl, TVP_CURSOR_CTL, old & 0xF3);	/* cursor RAM address A9,A8 = 0 */
+    ctl[RAMDAC_OFFSET + TVP_WADR_PAL] = 0;
+    for (i = 0; i < 1024; i++) {
+	/* the DAC wants cursor RAM writes during blanking, one per line */
+	for (wait = 0; wait < 100000 && (inb(0x3DA) & 1); wait++)
+	    ;
+	for (wait = 0; wait < 100000 && !(inb(0x3DA) & 1); wait++)
+	    ;
+	ctl[RAMDAC_OFFSET + TVP_CUR_RAM] = ram[i];
+    }
+    cursorFrame = frame;
+}
+
+- (void)positionCursor:(Point *)loc frame:(int)frame from:(unsigned char *)p
+{
+    int hot = *(int *)(p + EVP_HOT + 4 * frame);
+    int x = loc->x - *(short *)(p + EVP_MINX) - (short)(hot & 0xFFFF) + 64;
+    int y = loc->y - *(short *)(p + EVP_MINY) - (short)(hot >> 16) + 64;
+
+    ctl[RAMDAC_OFFSET + TVP_CUR_XLOW] = x & 0xFF;
+    ctl[RAMDAC_OFFSET + TVP_CUR_XHI] = (x >> 8) & 0x0F;
+    ctl[RAMDAC_OFFSET + TVP_CUR_YLOW] = y & 0xFF;
+    ctl[RAMDAC_OFFSET + TVP_CUR_YHI] = (y >> 8) & 0x0F;
+}
+
+- (void)cursorEnable:(BOOL)on
+{
+    unsigned char old;
+
+    DAC_R(ctl, TVP_CURSOR_CTL, old);
+    if (on)
+	DAC_W(ctl, TVP_CURSOR_CTL, (old & 0x6C) | 0x13);	/* X11 mode */
+    else
+	DAC_W(ctl, TVP_CURSOR_CTL, old & 0xFC);
+}
+
+- showCursor:(Point *)loc frame:(int)frame token:(int)t
+{
+    unsigned char *p;
+
+    if (!hwCursor || ctl == 0 || (p = evPriv(self)) == 0)
+	return [super showCursor:loc frame:frame token:t];
+    if (!ev_try_lock((ev_lock_t)(p + EVP_LOCK)))
+	return self;
+    {
+	static int logged;
+
+	if (!logged) {
+	    logged = 1;
+	    IOLog("%s: hardware cursor: state %08x, frame %d, bounds %d..%d x %d..%d,"
+		  " loc %d,%d\n", [self name], (unsigned int)p, frame,
+		  *(short *)(p + EVP_MINX), *(short *)(p + EVP_MAXX),
+		  *(short *)(p + EVP_MINY), *(short *)(p + EVP_MAXY),
+		  loc->x, loc->y);
+	}
+    }
+    [self loadCursorFrame:frame from:p];
+    [self positionCursor:loc frame:cursorFrame from:p];
+    [self cursorEnable:YES];
+    ev_unlock((ev_lock_t)(p + EVP_LOCK));
+    return self;
+}
+
+- moveCursor:(Point *)loc frame:(int)frame token:(int)t
+{
+    unsigned char *p;
+
+    if (!hwCursor || ctl == 0 || (p = evPriv(self)) == 0)
+	return [super moveCursor:loc frame:frame token:t];
+    if (!ev_try_lock((ev_lock_t)(p + EVP_LOCK)))
+	return self;
+    if (frame != cursorFrame) {
+	[self cursorEnable:NO];
+	[self loadCursorFrame:frame from:p];
+	[self cursorEnable:YES];
+    }
+    [self positionCursor:loc frame:cursorFrame from:p];
+    ev_unlock((ev_lock_t)(p + EVP_LOCK));
+    return self;
+}
+
+- hideCursor:(int)t
+{
+    unsigned char *p;
+
+    if (!hwCursor || ctl == 0 || (p = evPriv(self)) == 0)
+	return [super hideCursor:t];
+    if (!ev_try_lock((ev_lock_t)(p + EVP_LOCK)))
+	return self;
+    [self cursorEnable:NO];
+    ev_unlock((ev_lock_t)(p + EVP_LOCK));
+    return self;
 }
 
 - (void)loadPalette
@@ -498,6 +735,9 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
 	    g = EV_SCALE_BRIGHTNESS(level, g);
 	    b = EV_SCALE_BRIGHTNESS(level, b);
 	}
+	palShadow[i][0] = r;
+	palShadow[i][1] = g;
+	palShadow[i][2] = b;
 	ctl[RAMDAC_OFFSET + TVP_COL_PAL] = r;
 	ctl[RAMDAC_OFFSET + TVP_COL_PAL] = g;
 	ctl[RAMDAC_OFFSET + TVP_COL_PAL] = b;
@@ -691,6 +931,7 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
     IODisplayInfo *di = [self displayInfo];
 
     [self programMode];
+    cursorFrame = -1;
     [self loadPalette];
     memset(di->frameBuffer, 0, di->memorySize);
 }
@@ -699,6 +940,8 @@ probeVideoRAM(volatile unsigned int *fb, unsigned int maxBytes)
 {
     int k;
 
+    if (hwCursor && ctl)
+	[self cursorEnable:NO];
     if (saved) {
 	for (k = 0; k < 6; k++) {
 	    outb(CRTCEXT_INDEX, k);
