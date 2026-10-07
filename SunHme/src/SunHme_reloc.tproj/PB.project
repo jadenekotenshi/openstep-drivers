@@ -1,0 +1,12 @@
+LANGUAGE = English;
+FILESTABLE = {
+    OTHER_SOURCES = (Makefile, Makefile.preamble, Makefile.postamble, Makefile.driver_preamble, Load_Commands.sect);
+    H_FILES = (SunHme.h, SunHmeHdw.h);
+    CLASSES = (SunHme.m);
+};
+LOCALIZABLE_FILES = {
+};
+PROJECTVERSION = 1.1;
+PROJECTTYPE = Tool;
+PROJECTNAME = SunHme_reloc;
+GENERATEMAIN = YES;

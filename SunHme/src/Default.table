@@ -1,0 +1,13 @@
+"Title" = "SunSwift SBus HME Ethernet";
+"Driver Name" = "SunHme";
+"Family" = "Network";
+"Instance" = "0";
+"Prom Name" = "SUNW,hme";
+"Location" = "";
+"IRQ Levels" = "0x37";
+"Valid IRQ Levels" = "0x37";
+"Share IRQ Levels" = "YES";
+"Boot Driver" = "No";
+"Version" = "1.0";
+"Bus Type" = "SPARC";
+"Server Name" = "SunHme";

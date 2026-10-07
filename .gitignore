@@ -1,0 +1,6 @@
+.DS_Store
+i386_obj/
+sparc_obj/
+sym/
+dist/
+*.tar.gz

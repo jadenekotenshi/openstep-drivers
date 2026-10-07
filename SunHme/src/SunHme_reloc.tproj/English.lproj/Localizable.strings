@@ -1,0 +1,5 @@
+/* Name used in the browser */
+"SunHme" = "SunSwift SBus HME Ethernet";
+
+/* Name used in the inspector */
+"Long Name" = "SunSwift SBus HME Ethernet";
