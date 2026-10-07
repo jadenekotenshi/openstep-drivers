@@ -15,12 +15,18 @@ Developer Patch 4. **Not yet tried on real hardware.**
   the 16 KB control registers.
 * Sizes VRAM by probing for aliasing (the MGA-2164W cannot report it; 16 MB
   interleaved is detected in 86Box).
-* Modes: 640x480, 800x600, 1024x768 and 1280x1024 at 60 and 75 Hz, each at
-  8-bit colour, 8-bit gray, 15-bit (RGB:555/16) and 32-bit (RGB:888/32). Choose one
-  with the `"Display Mode"` key (see below).
-  Tested: 640x480x8, 800x600x16, 800x600 gray, 1024x768x8@75, 1024x768x32,
-  1280x1024x32 and 1280x1024x16@75. Others in the table share the same code
-  but were not individually tried.
+* Modes: 640x480, 800x600, 1024x768 and 1280x1024 at 60 and 75 Hz; 1152x900
+  at 60 Hz; 1600x1200 at 60 and 75 Hz; 1920x1080 at 60 Hz; 1920x1200 at 60 Hz
+  (reduced blanking, 154 MHz). Every one at 8-bit colour, 8-bit gray, 15-bit
+  (RGB:555/16) and 32-bit (RGB:888/32); modes that do not fit in the detected
+  VRAM are left out. Choose one with the `"Display Mode"` key (see below).
+  Tested in 86Box: 640x480x8, 800x600x16, 800x600 gray, 1024x768x8@75, 1024x768x32,
+  1280x1024x32, 1280x1024x16@75, 1152x900 gray, 1600x1200x16, 1920x1080x32,
+  1920x1080x16, 1920x1200x8 and 1920x1200x32. The rest share the same code but were
+  not individually tried. 86Box does not model the DAC's pixel-clock or memory
+  bandwidth limits, so the high-resolution 32-bit modes (1600x1200@75,
+  1920x1080 and 1920x1200 at 32-bit) are **untested on real hardware** and
+  may not work on a real card.
 * Hardware palette at 8 bpp (transfer table and brightness), software gamma at
   15/32 bpp.
 * **MTRR write combining** for the framebuffer aperture (see below).
