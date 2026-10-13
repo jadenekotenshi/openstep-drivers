@@ -14,7 +14,7 @@ LANGUAGE = English
 
 LOCAL_RESOURCES = Localizable.strings
 
-GLOBAL_RESOURCES = Default.table Instance0.table
+GLOBAL_RESOURCES = Default.table Instance0.table Display.modes
 
 TOOLS = MatroxMGA2164W_reloc.tproj
 
